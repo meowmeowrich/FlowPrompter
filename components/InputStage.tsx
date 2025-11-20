@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { ThemeConfig } from '../types';
+import { ThemeConfig, AnalysisResult, SpeechChunk } from '../types';
 import { Icons } from './Icons';
-import { analyzeSpeechText } from '../services/geminiService';
 
 interface InputStageProps {
   theme: ThemeConfig;
@@ -10,27 +9,74 @@ interface InputStageProps {
 
 export const InputStage: React.FC<InputStageProps> = ({ theme, onAnalysisComplete }) => {
   const [text, setText] = useState('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const analyzeLocally = (inputText: string): AnalysisResult => {
+    // 1. Clean and normalize text
+    const cleanText = inputText.replace(/\s+/g, ' ').trim();
+    
+    // 2. Split into chunks
+    // We split by sentence delimiters first, then by length
+    const chunks: SpeechChunk[] = [];
+    const rawSentences = cleanText.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [cleanText];
+
+    rawSentences.forEach(sentence => {
+      const words = sentence.trim().split(' ');
+      const MAX_WORDS = 12; // Optimal for teleprompter readability
+      
+      if (words.length <= MAX_WORDS) {
+        chunks.push(createChunk(sentence.trim()));
+      } else {
+        // Sub-chunk long sentences
+        let currentWords: string[] = [];
+        words.forEach(word => {
+          currentWords.push(word);
+          if (currentWords.length >= MAX_WORDS) {
+            chunks.push(createChunk(currentWords.join(' ')));
+            currentWords = [];
+          }
+        });
+        if (currentWords.length > 0) {
+          chunks.push(createChunk(currentWords.join(' ')));
+        }
+      }
+    });
+
+    const totalDurationSec = chunks.reduce((acc, c) => acc + (c.suggestedDurationMs / 1000), 0);
+    const summary = chunks.slice(0, 3).map(c => c.text).join(' ') + (chunks.length > 3 ? '...' : '');
+
+    return { chunks, totalDurationSec, summary };
+  };
+
+  const createChunk = (text: string): SpeechChunk => {
+    const wordCount = text.split(' ').length;
+    // Avg reading speed ~150 wpm -> ~2.5 words/sec
+    const durationMs = Math.max(1500, (wordCount / 2.5) * 1000);
+    return { text, suggestedDurationMs: durationMs };
+  };
+
   const handleAnalyze = async () => {
-    if (text.trim().length < 10) {
-      setError("Please enter at least 10 characters.");
+    if (text.trim().length < 5) {
+      setError("Please enter a longer speech.");
       return;
     }
     
-    setIsAnalyzing(true);
+    setIsProcessing(true);
     setError(null);
     
-    try {
-      const result = await analyzeSpeechText(text);
-      onAnalysisComplete(text, result);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to analyze text. Please check your API key or try again.");
-    } finally {
-      setIsAnalyzing(false);
-    }
+    // Simulate a brief processing delay for UX
+    setTimeout(() => {
+      try {
+        const result = analyzeLocally(text);
+        onAnalysisComplete(text, result);
+      } catch (err) {
+        console.error(err);
+        setError("Failed to process text.");
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 600);
   };
 
   return (
@@ -40,7 +86,7 @@ export const InputStage: React.FC<InputStageProps> = ({ theme, onAnalysisComplet
           Compose.
         </h1>
         <p className={`text-xl opacity-60 ${theme.text}`}>
-          Enter your speech below. AI will break it down for a natural flow.
+          Enter your speech below. We'll format it for the teleprompter instantly.
         </p>
       </div>
 
@@ -66,18 +112,18 @@ export const InputStage: React.FC<InputStageProps> = ({ theme, onAnalysisComplet
       <div className="flex justify-end">
         <button
           onClick={handleAnalyze}
-          disabled={isAnalyzing || !text}
+          disabled={isProcessing || !text}
           className={`
             relative overflow-hidden px-8 py-4 rounded-full font-bold text-lg transition-all duration-300
             flex items-center gap-3
-            ${isAnalyzing ? 'opacity-70 cursor-wait' : 'hover:-translate-y-1 hover:shadow-lg'}
+            ${isProcessing ? 'opacity-70 cursor-wait' : 'hover:-translate-y-1 hover:shadow-lg'}
             ${theme.text === 'text-slate-900 dark:text-slate-100' ? 'bg-blue-600 text-white' : 'bg-neutral-900 text-white dark:bg-white dark:text-black'}
           `}
         >
-          {isAnalyzing ? (
+          {isProcessing ? (
             <>
               <Icons.Wand2 className="animate-spin" size={20} />
-              Optimizing Flow...
+              Processing...
             </>
           ) : (
             <>

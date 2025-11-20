@@ -3,7 +3,6 @@ import { ThemeConfig, AnalysisResult } from '../types';
 import { Icons } from './Icons';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// Extend Window interface for SpeechRecognition
 declare global {
   interface Window {
     SpeechRecognition: any;
@@ -30,12 +29,10 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
   const [countdown, setCountdown] = useState(3);
   const [isPaused, setIsPaused] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [spokenBuffer, setSpokenBuffer] = useState(""); // Debugging/Visual feedback
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
-  const startTimeRef = useRef<number>(0);
   
   // Initialize Audio Recorder and Speech Recognition
   useEffect(() => {
@@ -66,26 +63,26 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
 
             recognition.onresult = (event: any) => {
                 let interimTranscript = '';
+                // Gather interim results (what is being said right now)
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        // handle final
-                        const transcript = event.results[i][0].transcript.toLowerCase();
-                        checkMatch(transcript);
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                        checkMatch(interimTranscript.toLowerCase());
-                    }
+                    interimTranscript += event.results[i][0].transcript;
                 }
-                setSpokenBuffer(interimTranscript.slice(-50)); // Keep last 50 chars for debug/visual
+                checkMatch(interimTranscript);
             };
 
             recognition.onend = () => {
                 if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording' && !isPaused) {
-                    recognition.start(); // Restart if it stops unexpectedly while recording
+                   try {
+                     recognition.start(); 
+                   } catch(e) {
+                     // ignore already started error
+                   }
                 }
             };
 
             recognitionRef.current = recognition;
+        } else {
+            console.warn("Speech Recognition API not supported in this browser.");
         }
 
         // Start Countdown
@@ -106,22 +103,66 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Check if the spoken text matches the END of the current chunk
   const checkMatch = (transcript: string) => {
-    // Clean transcript
-    const cleanTranscript = transcript.replace(/[^\w\s]|_/g, "").replace(/\s+/g, " ").trim();
-    
-    // Look ahead to next chunk
-    const nextIndex = currentIndex + 1;
-    if (nextIndex < analysis.chunks.length) {
-        const nextChunkText = analysis.chunks[nextIndex].text.toLowerCase().replace(/[^\w\s]|_/g, "").replace(/\s+/g, " ").trim();
-        const firstWordsOfNext = nextChunkText.split(' ').slice(0, 2).join(' '); // First 2 words
+    // We need the latest index, but useEffect closure traps it. 
+    // However, since we are inside a component that re-renders on currentIndex change, 
+    // the closure might be stale if we attached the listener once.
+    // Actually, we attached the listener ONCE in mount. So currentIndex is stale inside onresult.
+    // We need a Ref to track current index for the event handler.
+  };
+
+  // Use Ref to track index for the event listener which is only bound once
+  const currentIndexRef = useRef(currentIndex);
+  useEffect(() => {
+      currentIndexRef.current = currentIndex;
+  }, [currentIndex]);
+
+  const advanceChunk = useCallback(() => {
+    setCurrentIndex(prev => {
+      const next = prev + 1;
+      if (next >= analysis.chunks.length) {
+        // Finished
+        finishEarly();
+        return prev;
+      }
+      return next;
+    });
+  }, [analysis.chunks.length]);
+
+  // Re-bind the checkMatch logic to be accessible from the static event handler
+  // We simply use a ref-based checker inside the effect
+  useEffect(() => {
+      if (!recognitionRef.current) return;
+      
+      recognitionRef.current.onresult = (event: any) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            interimTranscript += event.results[i][0].transcript;
+        }
         
-        // Check if transcript contains the start of next chunk
-        if (cleanTranscript.includes(firstWordsOfNext)) {
+        const idx = currentIndexRef.current;
+        if (idx < 0 || idx >= analysis.chunks.length) return;
+
+        const currentChunkText = analysis.chunks[idx].text.toLowerCase().replace(/[^\w\s]/g, '');
+        const transcriptClean = interimTranscript.toLowerCase().replace(/[^\w\s]/g, '');
+        
+        if (!currentChunkText) return;
+
+        const chunkWords = currentChunkText.split(/\s+/).filter(w => w.length > 0);
+        
+        // Trigger conditions:
+        // 1. Transcript contains the last phrase of the chunk
+        const tailLength = Math.min(3, chunkWords.length);
+        const tailPhrase = chunkWords.slice(-tailLength).join(' ');
+        
+        // 2. Transcript contains > 80% of the chunk content (for short chunks)
+        
+        if (transcriptClean.includes(tailPhrase) && tailPhrase.length > 0) {
             advanceChunk();
         }
-    }
-  };
+      };
+  }, [analysis.chunks, advanceChunk]); // Re-bind if chunks change, though they shouldn't.
 
   const startCountdown = () => {
     let count = 3;
@@ -141,7 +182,6 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
   const startPrompter = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
       mediaRecorderRef.current.start();
-      startTimeRef.current = Date.now();
     }
     if (recognitionRef.current) {
         try {
@@ -153,18 +193,6 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
     }
     setCurrentIndex(0);
   };
-
-  const advanceChunk = useCallback(() => {
-    setCurrentIndex(prev => {
-      const next = prev + 1;
-      if (next >= analysis.chunks.length) {
-        // Finished
-        finishEarly();
-        return prev;
-      }
-      return next;
-    });
-  }, [analysis.chunks.length]);
 
   const togglePause = () => {
     if (isPaused) {
@@ -199,11 +227,12 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
     ? analysis.chunks[currentIndex - 1].text
     : "";
 
-  // Font size calculation
   const getFontSize = (text: string) => {
-      if (text.length < 20) return 'text-5xl md:text-7xl';
-      if (text.length < 40) return 'text-4xl md:text-6xl';
-      return 'text-3xl md:text-5xl';
+      // Dynamic sizing based on length to ensure it fits
+      if (text.length < 20) return 'text-5xl md:text-8xl';
+      if (text.length < 50) return 'text-4xl md:text-7xl';
+      if (text.length < 100) return 'text-3xl md:text-5xl';
+      return 'text-2xl md:text-4xl';
   };
 
   return (
@@ -259,10 +288,10 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
       )}
 
       {/* Teleprompter Text Display */}
-      <div className="relative z-10 w-full max-w-5xl px-8 text-center flex flex-col items-center justify-center h-full">
+      <div className="relative z-10 w-full max-w-6xl px-8 text-center flex flex-col items-center justify-center h-full">
          
          {/* Previous Text Faded */}
-         <div className={`mb-8 opacity-20 blur-[2px] select-none ${theme.text} text-2xl max-w-3xl transition-all duration-500`}>
+         <div className={`mb-12 opacity-10 blur-[1px] select-none ${theme.text} text-xl md:text-3xl max-w-4xl transition-all duration-500 scale-95`}>
             {prevChunkText}
          </div>
 
@@ -272,11 +301,11 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
                 key={currentIndex}
                 initial={{ opacity: 0, y: 50, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -50, scale: 1.05, filter: 'blur(10px)' }}
-                transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                className="py-4"
+                exit={{ opacity: 0, y: -50, scale: 1.05, filter: 'blur(8px)' }}
+                transition={{ type: "spring", stiffness: 250, damping: 25 }}
+                className="py-4 w-full flex justify-center"
               >
-                <h1 className={`${getFontSize(currentChunkText)} font-bold leading-tight tracking-tight ${theme.text} transition-all duration-300`}>
+                <h1 className={`${getFontSize(currentChunkText)} font-bold leading-tight tracking-tight ${theme.text} transition-all duration-300 max-w-5xl`}>
                   {currentChunkText}
                 </h1>
               </motion.div>
@@ -284,14 +313,9 @@ export const PrompterStage: React.FC<PrompterStageProps> = ({
          </AnimatePresence>
          
          {/* Next line preview */}
-         <div className={`mt-12 opacity-40 ${theme.text} text-2xl md:text-3xl font-medium max-w-3xl transition-all duration-500`}>
+         <div className={`mt-16 opacity-30 ${theme.text} text-xl md:text-3xl font-medium max-w-4xl transition-all duration-500`}>
             {nextChunkText}
          </div>
-
-         {/* Voice Debug (Hidden in prod, nice for feedback) */}
-         {/* <div className="absolute bottom-4 text-xs opacity-20 font-mono max-w-full truncate px-4">
-            {spokenBuffer}
-         </div> */}
       </div>
     </div>
   );

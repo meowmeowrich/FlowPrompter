@@ -119,7 +119,7 @@ export const SetupStage: React.FC<SetupStageProps> = ({ theme, analysis, onStart
               onClick={() => setDuration(analysis.totalDurationSec)}
               className={`text-xs underline opacity-60 hover:opacity-100 ${theme.text}`}
             >
-              Reset to AI Recommendation
+              Reset to Recommended Pace
             </button>
           </div>
         </div>
@@ -157,7 +157,7 @@ export const SetupStage: React.FC<SetupStageProps> = ({ theme, analysis, onStart
       <div className={`p-6 rounded-2xl border ${theme.panel} bg-transparent`}>
         <div className={`flex items-center gap-2 mb-2 opacity-70 ${theme.text}`}>
           <Icons.Type size={20} />
-          <span className="font-bold uppercase text-xs tracking-widest">AI Summary</span>
+          <span className="font-bold uppercase text-xs tracking-widest">Preview</span>
         </div>
         <p className={`text-lg italic opacity-80 ${theme.text}`}>
           "{analysis.summary}"
