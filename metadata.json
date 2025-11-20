@@ -1,0 +1,7 @@
+{
+  "name": "FlowPrompter AI",
+  "description": "A smart teleprompter application that uses Gemini AI to pace your speech naturally while you record.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
